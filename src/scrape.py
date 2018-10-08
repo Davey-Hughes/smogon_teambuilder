@@ -14,15 +14,16 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from pprint import pprint
 import threading
 import multiprocessing
 import queue
 import re
+import argparse
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
 import pandas as pd
+import psycopg2
 
 dex_url = 'https://raw.githubusercontent.com/veekun/pokedex/master/pokedex/data/csv/pokemon.csv'
 base_url = 'https://www.smogon.com/dex/sm/pokemon/'
@@ -31,6 +32,8 @@ poke_queue = queue.Queue()
 
 poke_data = dict()
 poke_data_lock = threading.Lock()
+
+args =  None
 
 
 def thread_work():
@@ -58,10 +61,14 @@ def process_poke_tiers(poke, tiers, driver):
     poke_data[poke] = dict()
     poke_data_lock.release()
 
-    for k in tiers:
-        url = 'https://www.smogon.com/dex/sm/pokemon/' + poke + '/' + k.lower().replace(' ', '_') + '/'
+    for tier in tiers:
+        url = 'https://www.smogon.com/dex/sm/pokemon/' + poke + '/' + \
+               tier.lower().replace(' ', '_') + '/'
+
         driver.get(url)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+        checks_counters = None
 
         movesets = soup.findAll(
             re.compile(r'.'),
@@ -81,11 +88,12 @@ def process_poke_tiers(poke, tiers, driver):
             movedict = dict()
             for move in moves:
                 for move_name in move:
-                    key = move_name.find(re.compile(r'.'),
-                                         attrs={
-                                             'data-reactid': re.compile(r'.')
-                                         }
-                                        )['data-reactid'].split('$')[0]
+                    key = move_name.find(
+                        re.compile(r'.'),
+                        attrs={
+                            'data-reactid': re.compile(r'.')
+                        }
+                    )['data-reactid'].split('$')[0]
 
                     if key in movedict:
                         movedict[key] = movedict[key] + '/' + move_name.text
@@ -110,7 +118,6 @@ def process_poke_tiers(poke, tiers, driver):
                 for l in li:
                     ability_list.append(l.text)
 
-
             # natures from moveset
             nature_list = []
             natures = m.findAll(class_='NatureList')
@@ -132,22 +139,51 @@ def process_poke_tiers(poke, tiers, driver):
             headers = text_section.findAll('h1')
             ps = text_section.findAll('p')
 
-            text_dict = dict(zip([h.text for h in headers], [p.text for p in ps]))
+            text_dict = dict(zip(
+                [h.text for h in headers],
+                [p.text for p in ps])
+            )
+
+            if text_dict == {}:
+                text_dict['Moves'] = None
+                text_dict['Set Details'] = None
+                text_dict['Usage Tips'] = None
+                text_dict['Team Options'] = None
 
             moveset_dict = {
+                'moveset_name': moveset_name,
                 'move_list': move_list,
                 'item': '/'.join(item_list),
                 'ability': '/'.join(ability_list),
                 'nature': '/'.join(nature_list),
                 'evs': '/'.join(ev_list),
-                'text_dict': text_dict
-
+                'text': text_dict
             }
 
             moveset_list.append(moveset_dict)
 
+        options_soup = soup.find(
+            re.compile(r'.'),
+            attrs={'data-reactid': '.0.1.1.3.6.0.2.3'}
+        )
+
+        for tag in options_soup.findAll('h1'):
+            if tag.text == 'Checks and Counters':
+                checks_counters = list(
+                    map(lambda s: str(s), filter(lambda s: s != '\n', tag.next_siblings))
+                )
+
+        if checks_counters is not None:
+            checks_counters = re.sub(
+                '<[^<]+?>',
+                '',
+                ' '.join(checks_counters)
+            ).replace('\n', '. ')
+
         poke_data_lock.acquire()
-        poke_data[poke][k] = moveset_list
+        poke_data[poke][tier] = dict()
+        poke_data[poke][tier]['moveset_list'] = moveset_list
+        poke_data[poke][tier]['checks_counters'] = checks_counters
         poke_data_lock.release()
 
 
@@ -164,6 +200,7 @@ def get_poke_tiers(poke, soup):
 
     return tiers
 
+
 def get_poke_soup(poke, driver):
     full_url = base_url + poke + '/'
 
@@ -173,7 +210,126 @@ def get_poke_soup(poke, driver):
     return soup
 
 
+def create_tables(cur):
+    cur.execute('SELECT to_regclass(%s)', ('public.movesets',))
+    if cur.fetchone() != ('movesets',):
+        cur.execute(
+            'CREATE TABLE movesets (\
+                poke_name varchar,\
+                tier varchar,\
+                moveset_name varchar,\
+                move_list varchar[],\
+                item varchar,\
+                ability varchar,\
+                nature varchar,\
+                evs varchar,\
+                moves varchar,\
+                set_details varchar,\
+                usage_tips varchar,\
+                team_options varchar,\
+                PRIMARY KEY(poke_name, tier, moveset_name)\
+            )'
+        )
+
+    cur.execute('SELECT to_regclass(%s)', ('public.tier_options',))
+    if cur.fetchone() != ('tier_options',):
+        cur.execute(
+            'CREATE TABLE tier_options (\
+                poke_name varchar,\
+                tier varchar,\
+                checks_counters varchar,\
+                PRIMARY KEY(poke_name, tier)\
+            )'
+        )
+
+
+def insert_data(cur, poke_data):
+    for poke_name in poke_data:
+        for tier in poke_data[poke_name]:
+            if args.force_update:
+                cur.execute(
+                    'INSERT INTO public.tier_options VALUES (%s, %s, %s)\
+                    ON CONFLICT (poke_name, tier) DO UPDATE \
+                    SET poke_name = excluded.poke_name,\
+                        tier = excluded.tier,\
+                        checks_counters = excluded.checks_counters',
+                    (poke_name, tier,
+                     poke_data[poke_name][tier]['checks_counters'])
+                )
+            else:
+                cur.execute(
+                    'INSERT INTO public.tier_options VALUES (%s, %s, %s)\
+                    ON CONFLICT DO NOTHING',
+                    (poke_name, tier,
+                     poke_data[poke_name][tier]['checks_counters'])
+                )
+
+            for ms in poke_data[poke_name][tier]['moveset_list']:
+                if args.force_update:
+                    cur.execute(
+                        'INSERT INTO public.movesets VALUES\
+                            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)\
+                            ON CONFLICT (poke_name, tier, moveset_name) \
+                            DO UPDATE \
+                            SET poke_name = excluded.poke_name,\
+                                tier = excluded.tier,\
+                                moveset_name = excluded.moveset_name ,\
+                                move_list = excluded.move_list,\
+                                item = excluded.item,\
+                                ability = excluded.ability,\
+                                nature = excluded.nature,\
+                                evs = excluded.evs,\
+                                moves = excluded.moves,\
+                                set_details = excluded.set_details,\
+                                usage_tips = excluded.usage_tips,\
+                                team_options = excluded.team_options',
+                        (poke_name, tier, ms['moveset_name'], ms['move_list'],
+                         ms['item'], ms['ability'], ms['nature'], ms['evs'],
+                         ms['text']['Moves'], ms['text']['Set Details'],
+                         ms['text']['Usage Tips'], ms['text']['Team Options'])
+                    )
+                else:
+                    cur.execute(
+                        'INSERT INTO public.movesets VALUES\
+                            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)\
+                            ON CONFLICT DO NOTHING',
+                        (poke_name, tier, ms['moveset_name'], ms['move_list'],
+                         ms['item'], ms['ability'], ms['nature'], ms['evs'],
+                         ms['text']['Moves'], ms['text']['Set Details'],
+                         ms['text']['Usage Tips'], ms['text']['Team Options'])
+                    )
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dbname', help='name of the database to connect to')
+    parser.add_argument('--role', help='role to access this database with')
+
+    parser.add_argument(
+        '--force-update',
+        help='use scraped data for any conflicts in database',
+        action='store_true',
+        default=False
+    )
+
+    global args
+    args = parser.parse_args()
+
+
 def main():
+    parse_arguments()
+
+    try:
+        conn = psycopg2.connect('dbname=%s user=%s' % (args.dbname, args.role))
+    except (NameError, psycopg2.OperationalError):
+        print('Make sure input database and role exist!\n')
+        raise
+
+    cur = conn.cursor()
+
+    create_tables(cur)
+    conn.commit()
+
     df = pd.read_csv(dex_url)
 
     for i, poke in enumerate(df['identifier']):
@@ -193,16 +349,17 @@ def main():
 
     # tell all threads to exit:
     for i in range(num_threads):
-        poke_queue.put(None)
+        poke_queue.put((None, None))
 
     # wait for threads to finish
     for t in threads:
         t.join()
 
-    # print poke_data
-    # for k in poke_data:
-        # print(k)
-        # pprint(poke_data[k])
+    insert_data(cur, poke_data)
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
 
 if __name__ == '__main__':
