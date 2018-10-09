@@ -47,10 +47,12 @@ class SmartFormatter(argparse.HelpFormatter):
         return argparse.HelpFormatter._split_lines(self, text, width)
 
 
+# gets the strings of paragraphs between two tags
 def get_tips(curr_tag):
     return list(map(lambda s: str(s), filter(lambda s: s != '\n', curr_tag.next_siblings)))
 
 
+# strips HTML tags and does some extra formatting on the string
 def sHTML_format(lst):
     if lst is None:
         return None
@@ -58,10 +60,13 @@ def sHTML_format(lst):
         return re.sub('<[^<]+?>', '', ' '.join(lst).replace('\n', '').strip())
 
 
+# overall controller function for each thread
 def thread_work():
+    # use chromedriver to process the webpages (since they're in react)
     driver_options = webdriver.chrome.options.Options()
     driver_options.add_argument('headless')
     driver = webdriver.Chrome(options=driver_options)
+
     while True:
         i, poke = poke_queue.get()
 
@@ -74,6 +79,7 @@ def thread_work():
         poke_soup = get_poke_soup(poke, driver)
         tiers = get_poke_tiers(poke, poke_soup)
 
+        # skip this pokemon if it doesn't compete in any tiers
         if tiers != {}:
             process_poke_tiers(poke, tiers, driver)
 
@@ -158,9 +164,13 @@ def process_poke_tiers(poke, tiers, driver):
                 for l in li:
                     ev_list.append(l.text)
 
-            # text for moveset
+            # texts for moveset
             text_soup = m.find('section')
 
+            # we only care about these
+            #
+            # TODO: could potentially add a 'misc' column to the db table and
+            # concatenate all other header paragraphs into one
             texts = {
                 'Moves': None,
                 'Set Details': None,
@@ -187,6 +197,7 @@ def process_poke_tiers(poke, tiers, driver):
 
             moveset_list.append(moveset_dict)
 
+        # options for each tier
         options_soup = soup.find(
             re.compile(r'.'),
             attrs={'data-reactid': '.0.1.1.3.6.0.2.3'}
@@ -209,6 +220,7 @@ def process_poke_tiers(poke, tiers, driver):
         poke_data_lock.release()
 
 
+# find all the tiers for a pokemon's page
 def get_poke_tiers(poke, soup):
     formats = soup.findAll(
         re.compile(r'.'),
@@ -232,6 +244,7 @@ def get_poke_soup(poke, driver):
     return soup
 
 
+# create the tables in the database if they don't already exist
 def create_tables(cur):
     cur.execute('SELECT to_regclass(%s)', ('public.movesets',))
     if cur.fetchone() != ('movesets',):
@@ -266,6 +279,7 @@ def create_tables(cur):
         )
 
 
+# insert the data from the poke_data dictionary
 def insert_data(cur, poke_data):
     for poke_name in poke_data:
         for tier in poke_data[poke_name]:
@@ -329,11 +343,14 @@ def insert_data(cur, poke_data):
                     )
 
 
+# check which pokemon are already in the database
+# (does not guarantee completeness of the data for each pokemon)
 def select_pokemon_names(cur):
     cur.execute('SELECT DISTINCT poke_name FROM public.movesets')
     return set([poke_name[0] for poke_name in cur.fetchall()])
 
 
+# parse command line arguments
 def parse_arguments():
     parser = argparse.ArgumentParser(formatter_class=SmartFormatter)
     parser.add_argument('--dbname', help='name of the database to connect to')
@@ -370,6 +387,7 @@ def parse_arguments():
 def main():
     parse_arguments()
 
+    # connect to the db
     try:
         conn = psycopg2.connect('dbname=%s user=%s password=%s' %
                                 (args.dbname, args.role,
@@ -383,8 +401,10 @@ def main():
     create_tables(cur)
     conn.commit()
 
+    # read the csv of pokemon pages to scrape
     df = pd.read_csv(args.dex_path)
 
+    # skip pokemon that are already in the db
     if args.skip_in_db:
         old_names = select_pokemon_names(cur)
         all_names = set(df['identifier'])
@@ -392,6 +412,7 @@ def main():
     else:
         names = df['identifier']
 
+    # ready the queue for multithreading work
     for i, poke in enumerate(names):
         poke_queue.put((i, poke))
 
@@ -415,6 +436,7 @@ def main():
     for t in threads:
         t.join()
 
+    # insert all the data into the db
     insert_data(cur, poke_data)
 
     conn.commit()
