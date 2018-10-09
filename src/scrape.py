@@ -36,6 +36,7 @@ poke_data_lock = threading.Lock()
 
 args = None
 
+
 # from https://stackoverflow.com/a/22157136
 class SmartFormatter(argparse.HelpFormatter):
 
@@ -44,6 +45,17 @@ class SmartFormatter(argparse.HelpFormatter):
             return text[2:].splitlines()
         # this is the RawTextHelpFormatter._split_lines
         return argparse.HelpFormatter._split_lines(self, text, width)
+
+
+def get_tips(curr_tag):
+    return list(map(lambda s: str(s), filter(lambda s: s != '\n', curr_tag.next_siblings)))
+
+
+def sHTML_format(lst):
+    if lst is None:
+        return None
+    else:
+        return re.sub('<[^<]+?>', '', ' '.join(lst).replace('\n', '').strip())
 
 
 def thread_work():
@@ -66,10 +78,6 @@ def thread_work():
             process_poke_tiers(poke, tiers, driver)
 
         poke_queue.task_done()
-
-
-def get_tips(curr_tag):
-    return list(map(lambda s: str(s), filter(lambda s: s != '\n', curr_tag.next_siblings)))
 
 
 def process_poke_tiers(poke, tiers, driver):
@@ -151,36 +159,21 @@ def process_poke_tiers(poke, tiers, driver):
                     ev_list.append(l.text)
 
             # text for moveset
-
             text_soup = m.find('section')
 
+            texts = {
+                'Moves': None,
+                'Set Details': None,
+                'Usage Tips': None,
+                'Team Options': None,
+            }
+
             for tag in text_soup.findAll('h1'):
-                if tag.text == 'Moves':
-                    move_descs = get_tips(tag)
+                texts[tag.text] = get_tips(tag)
 
-                if tag.text == 'Set Details':
-                    set_details =  get_tips(tag)
-
-                if tag.text == 'Usage Tips':
-                    usage_tips =  get_tips(tag)
-
-                if tag.text == 'Team Options':
-                    team_opts =  get_tips(tag)
-
-            texts = [move_descs, set_details, usage_tips, team_opts]
-            for i in range(len(texts)):
-                if texts[i] is not None:
-                    texts[i] = re.sub(
-                        '<[^<]+?>',
-                        '',
-                        ' '.join(texts[i])
-                    ).replace('\n', '. ')
-
-            text_dict = {}
-            text_dict['Moves'] = texts[0]
-            text_dict['Set Details'] =texts[1]
-            text_dict['Usage Tips'] =texts[2]
-            text_dict['Team Options'] = texts[3]
+            texts = dict(
+                map(lambda k: (k, sHTML_format(texts[k])), texts)
+            )
 
             moveset_dict = {
                 'moveset_name': moveset_name,
@@ -189,7 +182,7 @@ def process_poke_tiers(poke, tiers, driver):
                 'ability': '/'.join(ability_list),
                 'nature': '/'.join(nature_list),
                 'evs': '/'.join(ev_list),
-                'text': text_dict
+                'text': texts
             }
 
             moveset_list.append(moveset_dict)
@@ -199,21 +192,20 @@ def process_poke_tiers(poke, tiers, driver):
             attrs={'data-reactid': '.0.1.1.3.6.0.2.3'}
         )
 
+        checks_counters = None
+        other_options = None
+
         for tag in options_soup.findAll('h1'):
             if tag.text == 'Checks and Counters':
-                checks_counters = get_tips(tag)
-
-        if checks_counters is not None:
-            checks_counters = re.sub(
-                '<[^<]+?>',
-                '',
-                ' '.join(checks_counters)
-            ).replace('\n', '. ')
+                checks_counters = sHTML_format(get_tips(tag))
+            elif tag.text == 'Other Options':
+                other_options = sHTML_format(get_tips(tag))
 
         poke_data_lock.acquire()
         poke_data[poke][tier] = dict()
         poke_data[poke][tier]['moveset_list'] = moveset_list
         poke_data[poke][tier]['checks_counters'] = checks_counters
+        poke_data[poke][tier]['other_options'] = other_options
         poke_data_lock.release()
 
 
@@ -267,6 +259,7 @@ def create_tables(cur):
             'CREATE TABLE tier_options (\
                 poke_name varchar,\
                 tier varchar,\
+                other_options varchar,\
                 checks_counters varchar,\
                 PRIMARY KEY(poke_name, tier)\
             )'
@@ -278,19 +271,22 @@ def insert_data(cur, poke_data):
         for tier in poke_data[poke_name]:
             if args.force_update:
                 cur.execute(
-                    'INSERT INTO public.tier_options VALUES (%s, %s, %s)\
+                    'INSERT INTO public.tier_options VALUES (%s, %s, %s, %s)\
                     ON CONFLICT (poke_name, tier) DO UPDATE \
                     SET poke_name = excluded.poke_name,\
                         tier = excluded.tier,\
+                        other_options = excluded.other_options,\
                         checks_counters = excluded.checks_counters',
                     (poke_name, tier,
+                     poke_data[poke_name][tier]['other_options'],
                      poke_data[poke_name][tier]['checks_counters'])
                 )
             else:
                 cur.execute(
-                    'INSERT INTO public.tier_options VALUES (%s, %s, %s)\
+                    'INSERT INTO public.tier_options VALUES (%s, %s, %s, %s)\
                     ON CONFLICT DO NOTHING',
                     (poke_name, tier,
+                     poke_data[poke_name][tier]['other_options'],
                      poke_data[poke_name][tier]['checks_counters'])
                 )
 
@@ -298,15 +294,6 @@ def insert_data(cur, poke_data):
                 continue
 
             for ms in poke_data[poke_name][tier]['moveset_list']:
-                if 'Moves' not in ms['text']:
-                    ms['text']['Moves'] = None
-                if 'Set Details' not in ms['text']:
-                    ms['text']['Set Details'] = None
-                if 'Usage Tips' not in ms['text']:
-                    ms['text']['Usage Tips'] = None
-                if 'Team Options' not in ms['text']:
-                    ms['text']['Team Options'] = None
-
                 if args.force_update:
                     cur.execute(
                         'INSERT INTO public.movesets VALUES\
@@ -407,8 +394,6 @@ def main():
 
     for i, poke in enumerate(names):
         poke_queue.put((i, poke))
-        if i == 100:
-            break
 
     num_threads = multiprocessing.cpu_count()
     threads = []
