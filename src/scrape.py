@@ -314,10 +314,31 @@ def insert_data(cur, poke_data):
                     )
 
 
+def select_pokemon_names(cur):
+    cur.execute('SELECT DISTINCT poke_name FROM public.movesets')
+    return set([poke_name[0] for poke_name in cur.fetchall()])
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dbname', help='name of the database to connect to')
     parser.add_argument('--role', help='role to access this database with')
+
+    parser.add_argument(
+        '--dex-path',
+        help='read a custom csv file for pokemon to scrape; \
+              can be a local file or url; use column header "identifier" \
+              for pokemon names',
+        default=dex_url
+    )
+
+    parser.add_argument(
+        '--skip-in-db',
+        help='skip scraping a pokemon if it is already in the database; \
+              takes precidence over --force-update',
+        action='store_true',
+        default=False
+    )
 
     parser.add_argument(
         '--force-update',
@@ -344,9 +365,16 @@ def main():
     create_tables(cur)
     conn.commit()
 
-    df = pd.read_csv(dex_url)
+    df = pd.read_csv(args.dex_path)
 
-    for i, poke in enumerate(df['identifier']):
+    if args.skip_in_db:
+        old_names = select_pokemon_names(cur)
+        all_names = set(df['identifier'])
+        names = all_names.difference(old_names)
+    else:
+        names = df['identifier']
+
+    for i, poke in enumerate(names):
         poke_queue.put((i, poke))
 
     num_threads = multiprocessing.cpu_count()
