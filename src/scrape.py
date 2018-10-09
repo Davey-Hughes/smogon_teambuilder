@@ -19,6 +19,7 @@ import multiprocessing
 import queue
 import re
 import argparse
+import getpass
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -365,7 +366,9 @@ def main():
     parse_arguments()
 
     try:
-        conn = psycopg2.connect('dbname=%s user=%s' % (args.dbname, args.role))
+        conn = psycopg2.connect('dbname=%s user=%s password=%s' %
+                                (args.dbname, args.role,
+                                 getpass.getpass(prompt='DB Password: ')))
     except (NameError, psycopg2.OperationalError):
         print('Make sure input database and role exist!\n')
         raise
