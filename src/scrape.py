@@ -33,7 +33,7 @@ poke_queue = queue.Queue()
 poke_data = dict()
 poke_data_lock = threading.Lock()
 
-args =  None
+args = None
 
 
 def thread_work():
@@ -51,7 +51,9 @@ def thread_work():
 
         poke_soup = get_poke_soup(poke, driver)
         tiers = get_poke_tiers(poke, poke_soup)
-        process_poke_tiers(poke, tiers, driver)
+
+        if tiers != {}:
+            process_poke_tiers(poke, tiers, driver)
 
         poke_queue.task_done()
 
@@ -264,7 +266,19 @@ def insert_data(cur, poke_data):
                      poke_data[poke_name][tier]['checks_counters'])
                 )
 
+            if 'moveset_list' not in poke_data[poke_name][tier]:
+                continue
+
             for ms in poke_data[poke_name][tier]['moveset_list']:
+                if 'Moves' not in ms['text']:
+                    ms['text']['Moves'] = None
+                if 'Set Details' not in ms['text']:
+                    ms['text']['Set Details'] = None
+                if 'Usage Tips' not in ms['text']:
+                    ms['text']['Usage Tips'] = None
+                if 'Team Options' not in ms['text']:
+                    ms['text']['Team Options'] = None
+
                 if args.force_update:
                     cur.execute(
                         'INSERT INTO public.movesets VALUES\
