@@ -68,6 +68,10 @@ def thread_work():
         poke_queue.task_done()
 
 
+def get_tips(curr_tag):
+    return list(map(lambda s: str(s), filter(lambda s: s != '\n', curr_tag.next_siblings)))
+
+
 def process_poke_tiers(poke, tiers, driver):
     poke_data_lock.acquire()
     poke_data[poke] = dict()
@@ -147,25 +151,41 @@ def process_poke_tiers(poke, tiers, driver):
                     ev_list.append(l.text)
 
             # text for moveset
-            text_section = m.find('section')
-            headers = text_section.findAll('h1')
-            ps = text_section.findAll('p')
 
-            text_dict = dict(zip(
-                [h.text for h in headers],
-                [p.text for p in ps])
-            )
+            text_soup = m.find('section')
 
-            if text_dict == {}:
-                text_dict['Moves'] = None
-                text_dict['Set Details'] = None
-                text_dict['Usage Tips'] = None
-                text_dict['Team Options'] = None
+            for tag in text_soup.findAll('h1'):
+                if tag.text == 'Moves':
+                    move_descs = get_tips(tag)
+
+                if tag.text == 'Set Details':
+                    set_details =  get_tips(tag)
+
+                if tag.text == 'Usage Tips':
+                    usage_tips =  get_tips(tag)
+
+                if tag.text == 'Team Options':
+                    team_opts =  get_tips(tag)
+
+            texts = [move_descs, set_details, usage_tips, team_opts]
+            for i in range(len(texts)):
+                if texts[i] is not None:
+                    texts[i] = re.sub(
+                        '<[^<]+?>',
+                        '',
+                        ' '.join(texts[i])
+                    ).replace('\n', '. ')
+
+            text_dict = {}
+            text_dict['Moves'] = texts[0]
+            text_dict['Set Details'] =texts[1]
+            text_dict['Usage Tips'] =texts[2]
+            text_dict['Team Options'] = texts[3]
 
             moveset_dict = {
                 'moveset_name': moveset_name,
                 'move_list': move_list,
-                'item': '/'.join(item_list),
+                'item': '/'.join(item_list).strip(),
                 'ability': '/'.join(ability_list),
                 'nature': '/'.join(nature_list),
                 'evs': '/'.join(ev_list),
@@ -181,9 +201,7 @@ def process_poke_tiers(poke, tiers, driver):
 
         for tag in options_soup.findAll('h1'):
             if tag.text == 'Checks and Counters':
-                checks_counters = list(
-                    map(lambda s: str(s), filter(lambda s: s != '\n', tag.next_siblings))
-                )
+                checks_counters = get_tips(tag)
 
         if checks_counters is not None:
             checks_counters = re.sub(
@@ -389,6 +407,8 @@ def main():
 
     for i, poke in enumerate(names):
         poke_queue.put((i, poke))
+        if i == 100:
+            break
 
     num_threads = multiprocessing.cpu_count()
     threads = []
