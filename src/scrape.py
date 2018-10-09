@@ -35,6 +35,15 @@ poke_data_lock = threading.Lock()
 
 args = None
 
+# from https://stackoverflow.com/a/22157136
+class SmartFormatter(argparse.HelpFormatter):
+
+    def _split_lines(self, text, width):
+        if text.startswith('R|'):
+            return text[2:].splitlines()
+        # this is the RawTextHelpFormatter._split_lines
+        return argparse.HelpFormatter._split_lines(self, text, width)
+
 
 def thread_work():
     driver_options = webdriver.chrome.options.Options()
@@ -320,22 +329,23 @@ def select_pokemon_names(cur):
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=SmartFormatter)
     parser.add_argument('--dbname', help='name of the database to connect to')
     parser.add_argument('--role', help='role to access this database with')
 
     parser.add_argument(
         '--dex-path',
-        help='read a custom csv file for pokemon to scrape; \
-              can be a local file or url; use column header "identifier" \
-              for pokemon names',
+        help='R|read a custom csv file for pokemon to scrape;\n' +
+             'can be a local file or url;\n' +
+             'use column header "identifier" for pokemon names, default is:\n' +
+             '%s' % (dex_url),
         default=dex_url
     )
 
     parser.add_argument(
         '--skip-in-db',
-        help='skip scraping a pokemon if it is already in the database; \
-              takes precidence over --force-update',
+        help='R|skip scraping a pokemon if it is already in the database;\n' +
+             'takes precidence over --force-update',
         action='store_true',
         default=False
     )
