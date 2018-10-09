@@ -350,6 +350,26 @@ def select_pokemon_names(cur):
     return set([poke_name[0] for poke_name in cur.fetchall()])
 
 
+def connect_to_db():
+    # try without supplying password
+    try:
+        conn = psycopg2.connect('dbname=%s user=%s' %
+                                (args.dbname, args.role,))
+        return conn
+    except psycopg2.OperationalError as e:
+        if 'no password supplied' not in str(e):
+            raise
+
+    # try again asking for password
+    try:
+        conn = psycopg2.connect('dbname=%s user=%s password=%s' %
+                                (args.dbname, args.role,
+                                 getpass.getpass(prompt='DB Password: ')))
+        return conn
+    except (NameError, psycopg2.OperationalError):
+        raise
+
+
 # parse command line arguments
 def parse_arguments():
     parser = argparse.ArgumentParser(formatter_class=SmartFormatter)
@@ -388,14 +408,7 @@ def main():
     parse_arguments()
 
     # connect to the db
-    try:
-        conn = psycopg2.connect('dbname=%s user=%s password=%s' %
-                                (args.dbname, args.role,
-                                 getpass.getpass(prompt='DB Password: ')))
-    except (NameError, psycopg2.OperationalError):
-        print('Make sure input database and role exist!\n')
-        raise
-
+    conn = connect_to_db()
     cur = conn.cursor()
 
     create_tables(cur)
